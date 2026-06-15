@@ -18,7 +18,23 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card
+import json
+import os
+
+from dotenv import load_dotenv
+from groq import Groq
+
+from tools import search_listings, suggest_outfit, create_fit_card, compare_price, get_trends
+from utils.data_loader import load_listings
+
+load_dotenv()
+
+# System prompt used to LLM-parse the free-text query into structured filters.
+_PARSE_SYSTEM_PROMPT = (
+    "Extract the clothing description, size (or null), and max price as a "
+    "float (or null) from the user query. Return JSON only, no explanation: "
+    '{"description": str, "size": str|null, "max_price": float|null}'
+)
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -42,6 +58,9 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "outfit_suggestion": None,   # string returned by suggest_outfit
         "fit_card": None,            # string returned by create_fit_card
         "error": None,               # set if the interaction ended early
+        "loosened": None,            # set if filters were relaxed during retry
+        "price_verdict": None,       # string from compare_price (stretch: price comparison)
+        "trends": None,              # dict from get_trends (stretch: trend awareness)
     }
 
 
@@ -92,9 +111,88 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # ── Step 1: initialize session ────────────────────────────────────────────
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # ── Step 2: LLM-parse the query into structured filters ───────────────────
+    client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": _PARSE_SYSTEM_PROMPT},
+            {"role": "user", "content": query},
+        ],
+        response_format={"type": "json_object"},
+        max_tokens=200,
+    )
+    parsed = json.loads(response.choices[0].message.content)
+    session["parsed"] = parsed
+
+    description = parsed["description"]
+    size = parsed.get("size")
+    max_price = parsed.get("max_price")
+    if max_price is not None:
+        max_price = float(max_price)
+
+    no_results_msg = (
+        f"No listings found for '{description}'. Try different keywords."
+    )
+
+    # ── Step 3: search, relaxing filters one at a time if nothing matches ─────
+    # Try the full filters first, then drop size, then drop price. The item that
+    # ends up selected is the same as before — what changed is how the relaxation
+    # is *reported* (Step 4), so the note matches the item the user actually gets.
+    results = search_listings(description, size, max_price)
+    if not results and size is not None:
+        results = search_listings(description, size=None, max_price=max_price)
+    if not results and max_price is not None:
+        results = search_listings(description, size=None, max_price=None)
+
+    if not results:
+        session["error"] = no_results_msg
+        return session
+
+    session["search_results"] = results
+
+    # ── Step 4: select the top result, and note how it differs from the query ─
+    item = session["search_results"][0]
+    session["selected_item"] = item
+
+    # Only flag the constraints the chosen item *actually* misses, so we never
+    # claim the size filter was relaxed for an item that's already the right size.
+    differences = []
+    if size is not None and size.lower() not in item["size"].lower():
+        differences.append(f"size {item['size']} instead of {size}")
+    if max_price is not None and item["price"] > max_price:
+        differences.append(f"${item['price']:g}, over your ${max_price:g} budget")
+    if differences:
+        session["loosened"] = (
+            "no exact match — closest is " + " and ".join(differences)
+        )
+
+    # ── Step 4.5: assess the price against comparable listings (stretch) ──────
+    session["price_verdict"] = compare_price(
+        item=session["selected_item"],
+        listings=load_listings(),
+    )
+
+    # ── Step 4.6: pull current trends for the user's size range (stretch) ─────
+    session["trends"] = get_trends(size=size)
+
+    # ── Step 5: suggest an outfit from the selected item + wardrobe + trends ──
+    session["outfit_suggestion"] = suggest_outfit(
+        new_item=session["selected_item"],
+        wardrobe=session["wardrobe"],
+        trends=session["trends"],
+    )
+
+    # ── Step 6: create a shareable fit card ───────────────────────────────────
+    session["fit_card"] = create_fit_card(
+        outfit=session["outfit_suggestion"],
+        new_item=session["selected_item"],
+    )
+
+    # ── Step 7: return the completed session ──────────────────────────────────
     return session
 
 
@@ -112,6 +210,8 @@ if __name__ == "__main__":
         print(f"Error: {session['error']}")
     else:
         print(f"Found: {session['selected_item']['title']}")
+        print(f"\nPrice check: {session['price_verdict']}")
+        print(f"\nTrends: {session['trends']['summary']}")
         print(f"\nOutfit: {session['outfit_suggestion']}")
         print(f"\nFit card: {session['fit_card']}")
 
