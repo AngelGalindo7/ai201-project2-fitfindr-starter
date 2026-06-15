@@ -1,0 +1,12 @@
+{
+  "_description": "Mock snapshot of trending style tags from a public fashion platform (Depop), standing in for a live posts/tags feed. Used by get_trends() so the Trend Awareness tool can surface what's popular in a user's size range without an external API. Tags are drawn from the same vocabulary as listings.json so trends can coherently influence outfit suggestions.",
+  "platform": "Depop",
+  "captured": "2026-06 (mock snapshot)",
+  "by_size": {
+    "S": ["y2k", "baby tee", "feminine", "cottagecore"],
+    "M": ["90s", "streetwear", "grunge", "graphic tee"],
+    "L": ["oversized", "layering", "grunge", "earth tones"],
+    "XL": ["oversized", "streetwear", "cozy", "vintage"]
+  },
+  "overall": ["vintage", "streetwear", "y2k", "cottagecore"]
+}

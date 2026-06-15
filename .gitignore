@@ -1,6 +1,9 @@
 # API keys — never commit these
 .env
 
+# Saved style profile (per-user local state, written by the app at runtime)
+wardrobe_profile.json
+
 # Python
 __pycache__/
 *.py[cod]
